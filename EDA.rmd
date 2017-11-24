@@ -1,5 +1,5 @@
 ---
-title: "EDA"
+title: "Steering Wheel of Fortune - Porto Seguro EDA"
 output: html_document
 ---
 
@@ -7,22 +7,190 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-## 1 Introduction
+# 1 Introduction
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+This is an extensive Exploratory Data Analysis for the [Porto Seguro¡¯s Safe Driver Prediction](https://www.kaggle.com/c/porto-seguro-safe-driver-prediction) competition within the R environment of the [tidyverse](http://tidyverse.org/) and [ggplot2](http://ggplot2.tidyverse.org/). We will visualise all the different data features, their relation to the *target* variable, explore multi-parameter interactions, and perform feature engineering.
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+The aim of this challenge is to predict the probability whether a driver will make an insurance claim, with the purpose of providing a fairer insurance cost on the basis of individual driving habits. It is sponsored by [Porto Seguro](https://www.portoseguro.com.br/) - a major car and home insurance company in Brazil
 
-```{r cars}
-summary(cars)
+The [data](https://www.kaggle.com/c/porto-seguro-safe-driver-prediction/data) comes in the traditional Kaggle form of one training and test file each: `../input/train.csv` & `../input/test.csv`. Each row corresponds to a specific policy holder and the columns describe their features. The target variable is conveniently named *target* here and it indicates whether this policy holder made an insurance claim in the past. 
+
+
+
+# Preparations {.tabset .tabset-fade .tabset-pills}
+
+## Load libraries
+
+We load a range of libraries for general data wrangling and general visualisation together with more specialised tools.
+
+```{r, message = FALSE}
+# general visualisation
+library('ggplot2') # visualisation
+library('scales') # visualisation
+library('grid') # visualisation
+library('ggthemes') # visualisation
+library('gridExtra') # visualisation
+library('RColorBrewer') # visualisation
+library('corrplot') # visualisation
+
+# general data manipulation
+library('dplyr') # data manipulation
+library('readr') # input/output
+library('data.table') # data manipulation
+library('tibble') # data wrangling
+library('tidyr') # data wrangling
+library('stringr') # string manipulation
+library('forcats') # factor manipulation
+library('rlang') # data manipulation
+
+# specific visualisation
+library('alluvial') # visualisation
+library('ggfortify') # visualisation
+library('ggrepel') # visualisation
+library('ggridges') # visualisation
+library('VIM') # NAs
+library('plotly') # interactive
+library('ggforce') # visualisation
+
+# modelling
+library('xgboost') # modelling
+library('caret') # modelling
+library('MLmetrics') # gini metric
 ```
 
-## Including Plots
 
-You can also embed plots, for example:
+## Helper functions
 
-```{r pressure, echo=FALSE}
-plot(pressure)
+We use the *multiplot* function, courtesy of [R Cookbooks](http://www.cookbook-r.com/Graphs/Multiple_graphs_on_one_page_(ggplot2)/) to create multi-panel plots. We also make use of a brief helper function to compute binomial confidence intervals.
+
+```{r}
+# Define multiple plot function
+#
+# ggplot objects can be passed in ..., or to plotlist (as a list of ggplot objects)
+# - cols:   Number of columns in layout
+# - layout: A matrix specifying the layout. If present, 'cols' is ignored.
+#
+# If the layout is something like matrix(c(1,2,3,3), nrow=2, byrow=TRUE),
+# then plot 1 will go in the upper left, 2 will go in the upper right, and
+# 3 will go all the way across the bottom.
+#
+multiplot <- function(..., plotlist=NULL, file, cols=1, layout=NULL) {
+
+  # Make a list from the ... arguments and plotlist
+  plots <- c(list(...), plotlist)
+
+  numPlots = length(plots)
+
+  # If layout is NULL, then use 'cols' to determine layout
+  if (is.null(layout)) {
+    # Make the panel
+    # ncol: Number of columns of plots
+    # nrow: Number of rows needed, calculated from # of cols
+    layout <- matrix(seq(1, cols * ceiling(numPlots/cols)),
+                    ncol = cols, nrow = ceiling(numPlots/cols))
+  }
+
+ if (numPlots==1) {
+    print(plots[[1]])
+
+  } else {
+    # Set up the page
+    grid.newpage()
+    pushViewport(viewport(layout = grid.layout(nrow(layout), ncol(layout))))
+
+    # Make each plot, in the correct location
+    for (i in 1:numPlots) {
+      # Get the i,j matrix positions of the regions that contain this subplot
+      matchidx <- as.data.frame(which(layout == i, arr.ind = TRUE))
+
+      print(plots[[i]], vp = viewport(layout.pos.row = matchidx$row,
+                                      layout.pos.col = matchidx$col))
+    }
+  }
+}
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+```{r}
+# function to extract binomial confidence levels
+get_binCI <- function(x,n) as.list(setNames(binom.test(x,n)$conf.int, c("lwr", "upr")))
+```
+
+## Load data
+
+We use *data.table's* fread function to speed up reading in the data, even though in this challenge our files are not very large with about 110 MB for *train* and 165 MB for *test*. Here we are taking into account the fact that missing values in the original data sets are indicated by `-1` or `-1.0` and turn those into "proper" NAs.
+
+```{r warning=FALSE, results=FALSE}
+train <- as.tibble(fread('input/train.csv', na.strings=c("-1","-1.0")))
+test <- as.tibble(fread('input/test.csv', na.strings=c("-1","-1.0")))
+sample_submit <- as.tibble(fread('input/sample_submission.csv'))
+```
+
+
+
+# Overview: File structure and content {.tabset .tabset-fade .tabset-pills}
+
+As a first step let's have an overview of the data sets using the *summary* and *glimpse* tools.
+
+## Training data
+
+```{r}
+summary(train)
+```
+
+```{r}
+glimpse(train)
+```
+
+We find:
+
+- There are lots of features here. In total, our *training* data has 59 variables, including *id* and *target*. In some of them we already see a number of NAs.
+
+- The [data description](https://www.kaggle.com/c/porto-seguro-safe-driver-prediction/data) mentions that the names of the features indicate whether they are binary (*bin*) or categorical (*cat*) variables. Everything else is continuous or ordinal.
+
+- We have already [been told](https://www.kaggle.com/c/porto-seguro-safe-driver-prediction/discussion/40222) by [Adriano Moala](https://www.kaggle.com/adrianomoala) that the names of the variables indicate certain properties: *Ind" is related to individual or driver, "reg" is related to region, "car" is related to car itself and "calc" is an calculated feature.' Here we will refer to these properties as groups.
+
+- Note, that there is a *ps\_car\_11* as well as a *ps\_car\_11\_cat*. This is the only occasion where the numbering per group is neither consecutive nor unique. Probably a typo in the script that created the variable names.
+
+- The features are anonymised, because that worked so well in [Mercedes](https://www.kaggle.com/c/mercedes-benz-greener-manufacturing). Just kidding. Mostly ;-)
+
+
+
+## Test data:
+
+```{r}
+summary(test)
+```
+
+
+```{r}
+glimpse(test)
+```
+
+We find:
+
+
+## Missing values
+
+
+```{r}
+sum(is.na(train))
+sum(is.na(test))
+```
+
+There are of the order of 1 million missing values per data set. This is not trivial.
+
+
+## Reformating features
+
+We will turn the categorical features into factors and the binary ones into logical values. For the *target* variable we choose a factor format.
+
+```{r}
+train <- train %>%
+  mutate_at(vars(ends_with("cat")), funs(factor)) %>%
+  mutate_at(vars(ends_with("bin")), funs(as.logical)) %>%
+  mutate(target = as.factor(target))
+test <- test %>%
+  mutate_at(vars(ends_with("cat")), funs(factor)) %>%
+  mutate_at(vars(ends_with("bin")), funs(as.logical))
+```
